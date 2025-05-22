@@ -2,7 +2,7 @@
   [string]$dirPath
 )
 
-$ffmpegPath = "C:\Users\thoso\Downloads\ffmpeg-7.0.2-essentials_build\ffmpeg-7.0.2-essentials_build\bin\ffmpeg.exe"
+$ffmpegPath = "..\ffmpeg-7.0.2-essentials_build\ffmpeg-7.0.2-essentials_build\bin\ffmpeg.exe"
 
 Get-ChildItem -Path $dirPath -Filter *F.MP4 | ForEach-Object {
   $filename = $_.Name -replace "F.MP4$"
