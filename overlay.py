@@ -150,6 +150,28 @@ def find_pair(front_file, files_list):
     return best_match
 
 
+def set_file_timestamp(file_path, timestamp):
+    """
+    ファイルのタイムスタンプを設定する
+
+    Args:
+        file_path: ファイルパス
+        timestamp: datetimeオブジェクト
+
+    Returns:
+        bool: 成功したらTrue、失敗したらFalse
+    """
+    try:
+        # timestampをUnix timestampに変換
+        unix_timestamp = timestamp.timestamp()
+        # アクセス時刻と修正時刻の両方を設定
+        os.utime(file_path, (unix_timestamp, unix_timestamp))
+        return True
+    except OSError as e:
+        print(f"警告: タイムスタンプ設定に失敗しました: {e}")
+        return False
+
+
 def run_ffmpeg(front_file, back_file, output_file):
     """
     ffmpegコマンドを実行して合成処理を行う
@@ -160,8 +182,14 @@ def run_ffmpeg(front_file, back_file, output_file):
         output_file: 出力ファイルパス
 
     Returns:
-        bool: 成功したらTrue、失敗したらFalse
+        tuple: (bool, datetime or None) - 成功したらTrueと前方カメラのタイムスタンプ、失敗したらFalseとNone
     """
+    # 前方カメラファイルのタイムスタンプを取得
+    front_timestamp = None
+    front_parsed = parse_filename(Path(front_file).name)
+    if front_parsed:
+        front_timestamp = front_parsed[0]
+
     # ffmpegコマンドの構築
     cmd = [
         'ffmpeg',
@@ -182,12 +210,17 @@ def run_ffmpeg(front_file, back_file, output_file):
     try:
         # サブプロセス実行
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return True
+
+        # 出力ファイルのタイムスタンプを設定
+        if front_timestamp and os.path.exists(output_file):
+            set_file_timestamp(output_file, front_timestamp)
+
+        return True, front_timestamp
     except subprocess.CalledProcessError as e:
         print(f"エラー: ffmpeg処理に失敗しました - {e}")
         if e.stderr:
             print(f"詳細: {e.stderr}")
-        return False
+        return False, None
 
 
 def process_single_pair(front_file, back_file):
@@ -222,8 +255,12 @@ def process_single_pair(front_file, back_file):
     print(f"処理中: {os.path.basename(front_file)} + {os.path.basename(back_file)} -> {output_filename}")
 
     # ffmpeg実行
-    if run_ffmpeg(front_file, back_file, output_file):
-        print(f"完了: {output_filename}")
+    success, timestamp = run_ffmpeg(front_file, back_file, output_file)
+    if success:
+        if timestamp:
+            print(f"完了: {output_filename} (タイムスタンプ設定済み)")
+        else:
+            print(f"完了: {output_filename}")
         return True
     else:
         return False
