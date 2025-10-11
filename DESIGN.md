@@ -100,6 +100,12 @@ chmod +x overlay.py
   - 入力: `video.MP4`
   - 出力: `video_overlay.MP4`
 
+#### 出力ファイルのタイムスタンプ設定
+
+- **ドライブレコーダーファイル形式の場合**: 出力ファイルのタイムスタンプを、前方カメラファイルから解析した日時に設定します
+  - 例: `251008125706_EF.MP4` から作成されたファイルは、2025年10月8日12時57分06秒のタイムスタンプが設定されます
+- **一般的なファイル形式の場合**: ファイルを作成した時刻のタイムスタンプを保持します
+
 出力先は入力ファイルと同じディレクトリ
 
 ### ffmpegコマンド仕様
@@ -153,11 +159,13 @@ ffmpeg -i <前方カメラ動画> -i <後方カメラ動画> \
 5. 出力ファイルが既に存在する場合はスキップ（メッセージ表示）
 
 ### エラーメッセージ
+- 引数なし: "Usage: ./overlay.py <front_camera_video> <rear_camera_video> or ./overlay.py <folder_path>"
 - 引数不足: "使用方法: ./overlay.py <前方カメラ動画> <後方カメラ動画> または ./overlay.py <フォルダパス>"
 - ファイル不存在: "エラー: ファイルが見つかりません: <ファイル名>"
 - ディレクトリ不存在: "エラー: ディレクトリが見つかりません: <ディレクトリ名>"
-- ffmpeg未インストール: "エラー: ffmpegが見つかりません。Homebrewでインストールしてください: brew install ffmpeg"
+- ffmpeg未インストール: "Error: ffmpeg not found. Please install with: brew install ffmpeg"
 - ペアが見つからない: "警告: ペアとなる後方カメラ映像が見つかりません: <ファイル名>"
+- タイムスタンプ設定失敗: "警告: タイムスタンプ設定に失敗しました: <エラーメッセージ>"
 
 ## 実装の流れ
 
@@ -220,8 +228,9 @@ ffmpeg -i <前方カメラ動画> -i <後方カメラ動画> \
 1. `check_ffmpeg()`: ffmpegの存在確認
 2. `parse_filename(filename)`: ファイル名から日時、種別、カメラ向きを抽出
 3. `generate_output_filename(front_file)`: 出力ファイル名を生成（ドライブレコーダー形式対応）
-4. `find_pair(front_file, files_list)`: 前方カメラファイルに対応する後方カメラファイルを検索
-5. `run_ffmpeg(front_file, back_file, output_file)`: ffmpegコマンドを実行して合成
-6. `process_single_pair(front_file, back_file)`: 個別ファイル処理モード
-7. `process_batch(directory)`: バッチ処理モード
-8. `main()`: メイン処理（引数解析と各モードへの振り分け）
+4. `set_file_timestamp(file_path, timestamp)`: ファイルのタイムスタンプを設定（新規）
+5. `find_pair(front_file, files_list)`: 前方カメラファイルに対応する後方カメラファイルを検索
+6. `run_ffmpeg(front_file, back_file, output_file)`: ffmpegコマンドを実行して合成（タイムスタンプ設定機能付き）
+7. `process_single_pair(front_file, back_file)`: 個別ファイル処理モード
+8. `process_batch(directory)`: バッチ処理モード
+9. `main()`: メイン処理（引数解析と各モードへの振り分け）
