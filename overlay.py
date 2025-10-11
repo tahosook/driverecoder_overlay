@@ -16,6 +16,7 @@ import os
 import sys
 import subprocess
 import re
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -172,6 +173,152 @@ def set_file_timestamp(file_path, timestamp):
         return False
 
 
+def concat_videos(video_files, output_file):
+    """
+    複数の動画ファイルを連結する
+
+    Args:
+        video_files: 連結する動画ファイルのリスト（パス）
+        output_file: 出力ファイルパス
+
+    Returns:
+        bool: 成功したらTrue、失敗したらFalse
+    """
+    if len(video_files) < 2:
+        print("エラー: 連結には2つ以上の動画ファイルが必要です")
+        return False
+
+    # 一時ファイルを作成してファイルリストを書き込む
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        temp_list_file = f.name
+        for video_file in video_files:
+            # 絶対パスに変換して書き込む
+            abs_path = os.path.abspath(video_file)
+            f.write(f"file '{abs_path}'\n")
+
+    try:
+        # ffmpeg concatコマンドの実行
+        cmd = [
+            'ffmpeg',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', temp_list_file,
+            '-c', 'copy',  # 再エンコードなしで高速連結
+            output_file
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return True
+
+    except subprocess.CalledProcessError as e:
+        print(f"エラー: 動画連結に失敗しました - {e}")
+        if e.stderr:
+            print(f"詳細: {e.stderr}")
+        return False
+    finally:
+        # 一時ファイルを削除
+        try:
+            os.unlink(temp_list_file)
+        except OSError:
+            pass
+
+
+def find_consecutive_groups(overlay_files):
+    """
+    連続した_overlayファイルをグループ化する
+
+    Args:
+        overlay_files: _overlay.MP4ファイルのリスト（パス）
+
+    Returns:
+        list: 連続グループのリスト、各グループは辞書形式で
+             {'files': [ファイルリスト], 'event_type': 種別, 'start_time': datetimeオブジェクト}
+    """
+    groups = []
+
+    if not overlay_files:
+        return groups
+
+    # overlayファイルを解析して情報を付加
+    overlay_info = []
+    for file_path in overlay_files:
+        file_name = Path(file_path).name
+        # _overlayパターンに一致するかチェック
+        if '_overlay' in file_name and file_name.endswith('.MP4'):
+            # ファイル名から情報を解析
+            # パターン: yymmddHHMMss_[種別]_overlay.MP4
+
+            # _overlayの前の部分を取り出す
+            base_name = file_name.replace('_overlay.MP4', '')
+            # 日時部分と種別を分離
+            parts = base_name.split('_')
+            if len(parts) >= 2:
+                timestamp_str = parts[0]
+                event_type = parts[1]
+
+                try:
+                    timestamp = datetime.strptime(
+                        f"20{timestamp_str[:2]}-{timestamp_str[2:4]}-{timestamp_str[4:6]} {timestamp_str[6:8]}:{timestamp_str[8:10]}:{timestamp_str[10:12]}",
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    overlay_info.append({
+                        'path': file_path,
+                        'timestamp': timestamp,
+                        'event_type': event_type,
+                        'base_name': base_name
+                    })
+                except ValueError:
+                    continue
+
+    # timestampでソート
+    overlay_info.sort(key=lambda x: x['timestamp'])
+
+    # 連続グループを作成
+    current_group = None
+
+    for info in overlay_info:
+        # 新しいグループを開始するか、既存グループに追加するか
+        if current_group is None:
+            # 最初のグループ作成
+            current_group = {
+                'files': [info],
+                'event_type': info['event_type'],
+                'start_time': info['timestamp'],
+                'last_time': info['timestamp']
+            }
+        else:
+            # 現在のグループの最後のタイムスタンプとの差をチェック
+            time_diff = info['timestamp'] - current_group['last_time']
+            if time_diff.total_seconds() <= 30 and info['event_type'] == current_group['event_type']:
+                # 同じグループに追加
+                current_group['files'].append(info)
+                current_group['last_time'] = info['timestamp']
+            else:
+                # 現在のグループを保存し、新しいグループを開始
+                if len(current_group['files']) >= 2:
+                    groups.append({
+                        'files': [item['path'] for item in current_group['files']],
+                        'event_type': current_group['event_type'],
+                        'start_time': current_group['start_time']
+                    })
+                current_group = {
+                    'files': [info],
+                    'event_type': info['event_type'],
+                    'start_time': info['timestamp'],
+                    'last_time': info['timestamp']
+                }
+
+    # 最後のグループを保存
+    if current_group and len(current_group['files']) >= 2:
+        groups.append({
+            'files': [item['path'] for item in current_group['files']],
+            'event_type': current_group['event_type'],
+            'start_time': current_group['start_time']
+        })
+
+    return groups
+
+
 def run_ffmpeg(front_file, back_file, output_file):
     """
     ffmpegコマンドを実行して合成処理を行う
@@ -323,6 +470,62 @@ def process_batch(directory):
             successful += 1
         else:
             errors += 1
+
+    # 動画連結処理
+    print("\n動画連結処理を開始...")
+    overlay_files = list(directory_path.glob('*_overlay.MP4'))
+
+    if overlay_files:
+        # 連続グループを検索
+        consecutive_groups = find_consecutive_groups([str(f) for f in overlay_files])
+
+        if consecutive_groups:
+            print(f"連続グループ数: {len(consecutive_groups)}")
+
+            merged_count = 0
+            for i, group in enumerate(consecutive_groups):
+                group_files = group['files']
+                event_type = group['event_type']
+
+                if len(group_files) >= 2:
+                    # 最初のファイルの名前を基準に連結ファイル名を生成
+                    first_file_path = group_files[0]
+                    first_file_name = Path(first_file_path).name
+                    base_name = first_file_name.replace('_overlay.MP4', '')
+                    merged_filename = f"{base_name}_overlay_merged.MP4"
+                    merged_file_path = os.path.join(directory, merged_filename)
+
+                    print(f"グループ {i+1}: {len(group_files)}個のファイルを連結中...")
+                    for file_path in group_files:
+                        print(f"  - {os.path.basename(file_path)}")
+
+                    # 動画連結実行
+                    if concat_videos(group_files, merged_file_path):
+                        print(f"完了: {merged_filename}")
+
+                        # タイムスタンプを設定（最初のファイルのタイムスタンプを使用）
+                        if group['start_time']:
+                            set_file_timestamp(merged_file_path, group['start_time'])
+
+                        # 個別のファイルを削除
+                        for file_path in group_files:
+                            try:
+                                os.unlink(file_path)
+                                print(f"削除: {os.path.basename(file_path)}")
+                            except OSError as e:
+                                print(f"警告: ファイル削除に失敗: {os.path.basename(file_path)} - {e}")
+
+                        merged_count += 1
+                    else:
+                        print(f"エラー: 連結に失敗: {merged_filename}")
+                else:
+                    print(f"グループ {i+1}: 連結条件を満たさないためスキップ (ファイル数: {len(group_files)})")
+
+            print(f"動画連結処理完了: {merged_count}個のファイルグループを連結")
+        else:
+            print("連続する動画ファイルが見つかりませんでした")
+    else:
+        print("連結対象の_overlayファイルが見つかりませんでした")
 
     print(f"\nバッチ処理完了: 総数 {processed}, 成功 {successful}, エラー {errors}")
     return processed, successful, errors
