@@ -19,56 +19,57 @@ import re
 import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
+# 追加インポート
+import shutil
+from typing import Optional, Tuple, List, Dict
+
+# 定数化: しきい値は上部でまとめて管理
+TIME_DIFF_THRESHOLD_SEC = 2      # 前後カメラの最大許容ずれ（秒）
+GROUP_TIME_GAP_SEC = 30          # 連続グループ判定の最大間隔（秒）
+TIME_DIFF_THRESHOLD = timedelta(seconds=TIME_DIFF_THRESHOLD_SEC)
+GROUP_TIME_GAP = timedelta(seconds=GROUP_TIME_GAP_SEC)
 
 
 def check_ffmpeg():
     """ffmpegコマンドが利用可能か確認する"""
+    # shutil.which を使い存在を素早く判定 -> 存在するならバージョン確認
+    if shutil.which('ffmpeg') is None:
+        return False
     try:
-        subprocess.run(['ffmpeg', '-version'],
-                      capture_output=True, check=True)
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
         return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError:
         return False
 
 
-def parse_filename(filename):
+def is_mp4(path: Path) -> bool:
+    """拡張子が .mp4/.MP4 かを判定するヘルパー"""
+    return path.suffix.lower() == '.mp4'
+
+
+def parse_filename(filename: str) -> Optional[Tuple[datetime, str, str]]:
     """
     ファイル名から日時、種別、カメラ向きを抽出する
-
-    Args:
-        filename: ファイル名（拡張子含む）
-
-    Returns:
-        tuple: (timestamp, event_type, camera_direction) または None
+    戻り値: (timestamp, event_type, camera_direction) または None
     """
-    # 拡張子を除去してファイル名のみ取得
     base_name = Path(filename).stem
 
-    # 正規表現パターン: yymmddHHMMss_[種別][カメラ向き]
-    # yy: 年下2桁, mm: 月, dd: 日, HH: 時, MM: 分, SS: 秒
-    # 種別: 英大文字（E, Uなど）
-    # カメラ向き: F(前) or B(後)
+    # パターン: yymmddHHMMss_[種別][カメラ向き]
     pattern = r'^(\d{12})_([A-Z])([FB])$'
-    match = re.match(pattern, base_name)
+    match = re.match(pattern, base_name.upper())  # 大文字化してマッチに強くする
 
     if match:
         timestamp_str, event_type, camera_direction = match.groups()
-        # 日時文字列をdatetimeオブジェクトに変換
-        # YYMMDDHHMMSS -> 20YY-MM-DD HH:MM:SS
         try:
-            full_year = f"20{timestamp_str[:2]}"
-            month = timestamp_str[2:4]
-            day = timestamp_str[4:6]
-            hour = timestamp_str[6:8]
-            minute = timestamp_str[8:10]
-            second = timestamp_str[10:12]
+            # YYMMDDHHMMSS -> 20YY-...
             timestamp = datetime.strptime(
-                f"{full_year}-{month}-{day} {hour}:{minute}:{second}",
+                f"20{timestamp_str[:2]}-{timestamp_str[2:4]}-{timestamp_str[4:6]} "
+                f"{timestamp_str[6:8]}:{timestamp_str[8:10]}:{timestamp_str[10:12]}",
                 "%Y-%m-%d %H:%M:%S"
             )
             return timestamp, event_type, camera_direction
         except ValueError:
-            pass
+            return None
 
     return None
 
@@ -100,48 +101,32 @@ def generate_output_filename(front_file):
     return output_name
 
 
-def find_pair(front_file, files_list):
+def find_pair(front_file: str, files_list: List[str]) -> Optional[str]:
     """
-    前方カメラファイルに対応する後方カメラファイルを検索する
-
-    Args:
-        front_file: 前方カメラのファイルパス
-        files_list: 検索対象のファイルリスト
-
-    Returns:
-        str or None: 対応する後方カメラファイルのパス、見つからない場合はNone
+    前方カメラに対応する後方カメラを検索（時間差しきい値を定数参照）
     """
     front_path = Path(front_file)
-    front_name = front_path.name
-
-    # 前方カメラファイルの情報を取得
-    front_parsed = parse_filename(front_name)
+    front_parsed = parse_filename(front_path.name)
     if not front_parsed:
-        # ドライブレコーダー形式でない場合はペアリングなし
         return None
 
     front_timestamp, front_event_type, front_camera_direction = front_parsed
-
-    # F以外は前方カメラではない
     if front_camera_direction != 'F':
         return None
 
     best_match = None
-    min_time_diff = timedelta(seconds=2)  # 1秒以内のずれを許容
+    min_time_diff = TIME_DIFF_THRESHOLD  # 定数参照
 
     for file_path in files_list:
         if file_path == front_file:
-            continue  # 自分自身は除外
+            continue
 
-        file_name = Path(file_path).name
-        file_parsed = parse_filename(file_name)
-
+        file_parsed = parse_filename(Path(file_path).name)
         if not file_parsed:
-            continue  # ドライブレコーダー形式でないファイルは除外
+            continue
 
         file_timestamp, file_event_type, file_camera_direction = file_parsed
 
-        # カメラ向きが後方(B)で、種別が一致する場合のみ候補
         if file_camera_direction == 'B' and file_event_type == front_event_type:
             time_diff = abs(front_timestamp - file_timestamp)
             if time_diff < min_time_diff:
@@ -173,92 +158,65 @@ def set_file_timestamp(file_path, timestamp):
         return False
 
 
-def concat_videos(video_files, output_file):
+def concat_videos(video_files: List[str], output_file: str) -> bool:
     """
-    複数の動画ファイルを連結する
-
-    Args:
-        video_files: 連結する動画ファイルのリスト（パス）
-        output_file: 出力ファイルパス
-
-    Returns:
-        bool: 成功したらTrue、失敗したらFalse
+    複数の動画ファイルを連結する（呼び出し挙動は変えない）
     """
     if len(video_files) < 2:
         print("エラー: 連結には2つ以上の動画ファイルが必要です")
         return False
 
-    # 一時ファイルを作成してファイルリストを書き込む
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         temp_list_file = f.name
         for video_file in video_files:
-            # 絶対パスに変換して書き込む
             abs_path = os.path.abspath(video_file)
             f.write(f"file '{abs_path}'\n")
 
     try:
-        # ffmpeg concatコマンドの実行
         cmd = [
             'ffmpeg',
             '-f', 'concat',
             '-safe', '0',
             '-i', temp_list_file,
-            '-c', 'copy',  # 再エンコードなしで高速連結
+            '-c', 'copy',
             output_file
         ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
         return True
-
     except subprocess.CalledProcessError as e:
         print(f"エラー: 動画連結に失敗しました - {e}")
         if e.stderr:
             print(f"詳細: {e.stderr}")
         return False
     finally:
-        # 一時ファイルを削除
         try:
             os.unlink(temp_list_file)
         except OSError:
             pass
 
 
-def find_consecutive_groups(overlay_files):
+def find_consecutive_groups(overlay_files: List[str]) -> List[Dict]:
     """
     連続した_overlayファイルをグループ化する
-
-    Args:
-        overlay_files: _overlay.MP4ファイルのリスト（パス）
-
-    Returns:
-        list: 連続グループのリスト、各グループは辞書形式で
-             {'files': [ファイルリスト], 'event_type': 種別, 'start_time': datetimeオブジェクト}
+    GROUP_TIME_GAP 定数を参照して間隔判定を行う
     """
     groups = []
-
     if not overlay_files:
         return groups
 
-    # overlayファイルを解析して情報を付加
     overlay_info = []
     for file_path in overlay_files:
         file_name = Path(file_path).name
-        # _overlayパターンに一致するかチェック
-        if '_overlay' in file_name and file_name.endswith('.MP4'):
-            # ファイル名から情報を解析
-            # パターン: yymmddHHMMss_[種別]_overlay.MP4
-
-            # _overlayの前の部分を取り出す
+        if '_overlay' in file_name and file_name.upper().endswith('.MP4'):
             base_name = file_name.replace('_overlay.MP4', '')
-            # 日時部分と種別を分離
             parts = base_name.split('_')
             if len(parts) >= 2:
                 timestamp_str = parts[0]
                 event_type = parts[1]
-
                 try:
                     timestamp = datetime.strptime(
-                        f"20{timestamp_str[:2]}-{timestamp_str[2:4]}-{timestamp_str[4:6]} {timestamp_str[6:8]}:{timestamp_str[8:10]}:{timestamp_str[10:12]}",
+                        f"20{timestamp_str[:2]}-{timestamp_str[2:4]}-{timestamp_str[4:6]} "
+                        f"{timestamp_str[6:8]}:{timestamp_str[8:10]}:{timestamp_str[10:12]}",
                         "%Y-%m-%d %H:%M:%S"
                     )
                     overlay_info.append({
@@ -270,16 +228,11 @@ def find_consecutive_groups(overlay_files):
                 except ValueError:
                     continue
 
-    # timestampでソート
     overlay_info.sort(key=lambda x: x['timestamp'])
 
-    # 連続グループを作成
     current_group = None
-
     for info in overlay_info:
-        # 新しいグループを開始するか、既存グループに追加するか
         if current_group is None:
-            # 最初のグループ作成
             current_group = {
                 'files': [info],
                 'event_type': info['event_type'],
@@ -287,14 +240,11 @@ def find_consecutive_groups(overlay_files):
                 'last_time': info['timestamp']
             }
         else:
-            # 現在のグループの最後のタイムスタンプとの差をチェック
             time_diff = info['timestamp'] - current_group['last_time']
-            if time_diff.total_seconds() <= 30 and info['event_type'] == current_group['event_type']:
-                # 同じグループに追加
+            if time_diff <= GROUP_TIME_GAP and info['event_type'] == current_group['event_type']:
                 current_group['files'].append(info)
                 current_group['last_time'] = info['timestamp']
             else:
-                # 現在のグループを保存し、新しいグループを開始
                 if len(current_group['files']) >= 2:
                     groups.append({
                         'files': [item['path'] for item in current_group['files']],
@@ -308,7 +258,6 @@ def find_consecutive_groups(overlay_files):
                     'last_time': info['timestamp']
                 }
 
-    # 最後のグループを保存
     if current_group and len(current_group['files']) >= 2:
         groups.append({
             'files': [item['path'] for item in current_group['files']],
