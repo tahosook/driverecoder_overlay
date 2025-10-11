@@ -294,7 +294,7 @@ def run_ffmpeg(front_file, back_file, output_file):
         '-filter_complex',
         '[0:v]crop=iw:ih*0.9[v0];[1:v]scale=iw/2.5:ih/2.5,crop=iw:ih*0.66[v1];[v0][v1]overlay=W-w-20:H-h-70[v]',
         '-map', '[v]',
-        '-map', '0:a',
+        '-map', '0:a?',  # 前方ファイルに音声が無い場合でもエラーとせず処理を継続する
         '-c:v', 'libx264',
         '-preset', 'veryfast',
         '-crf', '23',
