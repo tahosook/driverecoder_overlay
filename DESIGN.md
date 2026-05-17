@@ -128,7 +128,7 @@ chmod +x overlay.py
 
 ```bash
 ffmpeg -i <前方カメラ動画> -i <後方カメラ動画> \
-  -filter_complex "[0:v]crop=iw:ih*0.9[v0];[1:v]scale=iw/2.5:ih/2.5,crop=iw:ih*0.66[v1];[v0][v1]overlay=W-w-20:H-h-70[v]" \
+  -filter_complex "[0:v]crop=iw:ih*0.9[v0];[1:v]scale=iw/2.5:ih/2.5,crop=iw:ih*0.66[v1];[v0][v1]overlay=W-w-20:H-h-20[v]" \
   -map "[v]" \
   -map 0:a \
   -c:v libx264 \
@@ -147,9 +147,9 @@ ffmpeg -i <前方カメラ動画> -i <後方カメラ動画> \
    - サイズを2.5分の1に縮小
    - 上下を66%にクロップ（上下34%をカット）
 
-3. **オーバーレイ** `[v0][v1]overlay=W-w-20:H-h-70[v]`
+3. **オーバーレイ** `[v0][v1]overlay=W-w-20:H-h-20[v]`
    - 後方カメラ映像を前方カメラ映像の右下に配置
-   - 右端から20ピクセル、下端から70ピクセルの位置
+   - 右端から20ピクセル、下端から20ピクセルの位置
 
 4. **音声処理**
    - `-map 0:a`: 前方カメラ（第1入力）の音声トラックを使用
